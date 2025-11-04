@@ -10,6 +10,8 @@ class ConfettiQuiz extends LitElement {
         showSummary: { type: Boolean },
         // JSON string attribute to supply questions dynamically
         questionsAttr: { type: String, attribute: 'questions' },
+        // Alias: allow <confetti-quiz kuis='[...]'> as well
+        kuisAttr: { type: String, attribute: 'kuis' },
     };
 
     constructor() {
@@ -20,6 +22,7 @@ class ConfettiQuiz extends LitElement {
         this.currentQuestionIndex = 0;
         this.showSummary = false;
         this.questionsAttr = '';
+        this.kuisAttr = '';
         
         // Array pertanyaan default (fallback)
         this.questions = [
@@ -39,8 +42,10 @@ class ConfettiQuiz extends LitElement {
     }
 
     updated(changed) {
-        if (changed.has('questionsAttr')) {
-            const parsed = this._parseQuestions(this.questionsAttr);
+        if (changed.has('questionsAttr') || changed.has('kuisAttr')) {
+            const parsedPrimary = this._parseQuestions(this.questionsAttr);
+            const parsedAlias = this._parseQuestions(this.kuisAttr);
+            const parsed = parsedPrimary && parsedPrimary.length ? parsedPrimary : (parsedAlias && parsedAlias.length ? parsedAlias : null);
             if (parsed && parsed.length) {
                 this.questions = parsed;
                 // reset state when questions change
