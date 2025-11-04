@@ -39,6 +39,7 @@ class CustomKuisTheme extends HAXCMSLitElementTheme {
     this._items = [];
     this.activeId = null;
     this.logo = null;
+    this._onQuizResult = (e) => this.handleQuizResult(e);
     this.searchQuery = '';
     this.searchResults = [];
     this.searchOpen = false;
@@ -54,6 +55,61 @@ class CustomKuisTheme extends HAXCMSLitElementTheme {
         this.filterSearch(this.searchQuery);
       }
     });
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    globalThis.addEventListener('quiz-result', this._onQuizResult);
+  }
+  disconnectedCallback() {
+    globalThis.removeEventListener('quiz-result', this._onQuizResult);
+    super.disconnectedCallback();
+  }
+
+  async handleQuizResult(e) {
+    try {
+      const slug = e?.detail?.slug;
+      const result = e?.detail?.result || {};
+      if (!slug) return;
+      // Update local cache map for fallback persistence
+      const key = 'site.quizResults';
+      const raw = localStorage.getItem(key);
+      const map = raw ? JSON.parse(raw) : {};
+      map[slug] = { ...result, updated: Date.now() };
+      localStorage.setItem(key, JSON.stringify(map));
+      // Best-effort site.json update (if backend allows)
+      await this._updateSiteJson(slug, result);
+    } catch (err) {
+      // ignore
+    }
+  }
+
+  async _updateSiteJson(slug, result) {
+    try {
+      const res = await fetch('./site.json', { credentials: 'same-origin' });
+      if (!res.ok) return false;
+      const json = await res.json();
+      const items = Array.isArray(json.items) ? json.items : [];
+      const it = items.find(i => (i.slug || '') === slug);
+      if (!it) return false;
+      it.metadata = it.metadata || {};
+      it.metadata.quizResult = {
+        score: result.score || 0,
+        percentage: result.percentage || 0,
+        finished: !!result.finished,
+        updated: Date.now()
+      };
+      // Attempt to persist (requires server capability)
+      await fetch('./site.json', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(json),
+        credentials: 'same-origin'
+      });
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   toggleDarkMode = (e) => {
@@ -197,6 +253,7 @@ class CustomKuisTheme extends HAXCMSLitElementTheme {
     const el = links[this.selectedIndex];
     el?.scrollIntoView?.({ block: 'nearest' });
   }
+
 
   // properties to respond to the activeID and list of items
   static get properties() {

@@ -6,12 +6,16 @@ class ConfettiQuiz extends LitElement {
         message: { type: String },
         isCorrect: { type: Boolean },
         isDisabled: { type: Boolean },
+        isChecked: { type: Boolean },
         currentQuestionIndex: { type: Number },
         showSummary: { type: Boolean },
         // JSON string attribute to supply questions dynamically
         questionsAttr: { type: String, attribute: 'questions' },
         // Alias: allow <confetti-quiz kuis='[...]'> as well
         kuisAttr: { type: String, attribute: 'kuis' },
+        autoloadResults: { type: Boolean, attribute: 'autoload-results', reflect: true },
+        externalSummary: { type: Object },
+        externalLoaded: { type: Boolean },
     };
 
     constructor() {
@@ -19,19 +23,18 @@ class ConfettiQuiz extends LitElement {
         this.message = '';
         this.isCorrect = false;
         this.isDisabled = false;
+        this.isChecked = false;
         this.currentQuestionIndex = 0;
         this.showSummary = false;
         this.questionsAttr = '';
         this.kuisAttr = '';
+        this.autoloadResults = true;
+        this.questions = [];
+        this.externalSummary = null;
+        this.externalLoaded = false;
         
         // Array pertanyaan default (fallback)
-        this.questions = [
-            { question: "Apa saja nama planet terbesar di tata surya kita?", answer: "jupiter" },
-            { question: "Berapa jumlah planet dalam tata surya?", answer: "delapan" },
-            { question: "Planet apa yang paling dekat dengan matahari?", answer: "merkurius" },
-            { question: "Bulan adalah satelit alami planet apa?", answer: "bumi" },
-            { question: "Apa nama bintang di pusat tata surya kita?", answer: "matahari" },
-            { question: "Planet mana yang memiliki cincin?", answer: "saturnus" },
+        this.defaultQuestions = [
             { question: "Siapakah presiden pertama Indonesia?", answer: "soekarno" },
 
         ];
@@ -41,23 +44,71 @@ class ConfettiQuiz extends LitElement {
         this.correctAnswers = [];
     }
 
-    updated(changed) {
-        if (changed.has('questionsAttr') || changed.has('kuisAttr')) {
-            const parsedPrimary = this._parseQuestions(this.questionsAttr);
-            const parsedAlias = this._parseQuestions(this.kuisAttr);
-            const parsed = parsedPrimary && parsedPrimary.length ? parsedPrimary : (parsedAlias && parsedAlias.length ? parsedAlias : null);
-            if (parsed && parsed.length) {
-                this.questions = parsed;
-                // reset state when questions change
-                this.currentQuestionIndex = 0;
-                this.showSummary = false;
-                this.message = '';
-                this.isCorrect = false;
-                this.isDisabled = false;
-                this.userAnswers = [];
-                this.correctAnswers = [];
+    connectedCallback() {
+        super.connectedCallback();
+        // Parse questions directly from attributes for initial render
+        const raw = this.getAttribute('questions') || this.getAttribute('kuis') || '';
+        const parsed = this._parseQuestions(raw);
+        if (parsed && parsed.length) {
+            this.questions = parsed;
+        }
+        if (!this.questions || !this.questions.length) {
+            this.questions = this.defaultQuestions.slice();
+        }
+        this.currentQuestionIndex = 0;
+        this.showSummary = false;
+        this.message = '';
+        this.isCorrect = false;
+        this.isDisabled = false;
+        this.isChecked = false;
+        this.userAnswers = [];
+        this.correctAnswers = [];
+    }
+
+    async firstUpdated() {
+        if (this.autoloadResults) {
+            const saved = this._loadResults();
+            if (saved && Array.isArray(saved.userAnswers) && Array.isArray(saved.correctAnswers) && Array.isArray(saved.questions)) {
+                this.questions = saved.questions;
+                this.userAnswers = saved.userAnswers;
+                this.correctAnswers = saved.correctAnswers;
+                this.currentQuestionIndex = Math.min(saved.currentQuestionIndex || 0, Math.max(0, this.questions.length - 1));
+                // Determine finished state
+                const finished = Array.isArray(this.userAnswers) && this.userAnswers.length >= this.questions.length && this.correctAnswers.length >= this.questions.length;
+                this.showSummary = !!saved.showSummary || finished;
+                if (this.showSummary) {
+                    this.isDisabled = true;
+                }
             }
         }
+        // attempt to load prior result from site.json
+        await this._loadFromSiteJson();
+    }
+
+    updated(changed) {
+        if (changed.has('questionsAttr') || changed.has('kuisAttr')) {
+            this._applyAttrQuestions();
+        }
+    }
+
+    _applyAttrQuestions() {
+        const parsedPrimary = this._parseQuestions(this.questionsAttr);
+        const parsedAlias = this._parseQuestions(this.kuisAttr);
+        const parsed = parsedPrimary && parsedPrimary.length ? parsedPrimary : (parsedAlias && parsedAlias.length ? parsedAlias : null);
+        if (parsed && parsed.length) {
+            this.questions = parsed;
+        }
+        if (!this.questions || !this.questions.length) {
+            this.questions = this.defaultQuestions.slice();
+        }
+        // reset state whenever questions are set the first time
+        this.currentQuestionIndex = 0;
+        this.showSummary = false;
+        this.message = '';
+        this.isCorrect = false;
+        this.isDisabled = false;
+        this.userAnswers = [];
+        this.correctAnswers = [];
     }
 
     _parseQuestions(str) {
@@ -274,6 +325,94 @@ class ConfettiQuiz extends LitElement {
         }
     }
 
+    _storageKey() {
+        try { return `confetti-quiz:${location.pathname}`; } catch (e) { return 'confetti-quiz'; }
+    }
+
+    _saveResults() {
+        try {
+            const payload = {
+                questions: this.questions,
+                userAnswers: this.userAnswers,
+                correctAnswers: this.correctAnswers,
+                currentQuestionIndex: this.currentQuestionIndex,
+                showSummary: this.showSummary,
+                score: this.getScore(),
+                percentage: this.getPercentage(),
+                savedAt: Date.now(),
+            };
+            localStorage.setItem(this._storageKey(), JSON.stringify(payload));
+        } catch (e) { /* ignore */ }
+    }
+
+    _loadResults() {
+        try {
+            const raw = localStorage.getItem(this._storageKey());
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch (e) { return null; }
+    }
+
+    clearResults() {
+        try { localStorage.removeItem(this._storageKey()); } catch (e) { /* ignore */ }
+        this.externalSummary = null;
+        this.externalLoaded = false;
+    }
+
+    _currentSlug() {
+        try {
+            const p = location.pathname.replace(/\/+$/, '');
+            const seg = decodeURIComponent(p.split('/').filter(Boolean).pop() || 'welcome');
+            return seg;
+        } catch(e) { return 'welcome'; }
+    }
+
+    async _loadFromSiteJson() {
+        try {
+            const res = await fetch('../site.json', { credentials: 'same-origin' });
+            if (!res.ok) return;
+            const site = await res.json();
+            const slug = this._currentSlug();
+            const items = Array.isArray(site.items) ? site.items : [];
+            const it = items.find(x => (x.slug || '') === slug);
+            const meta = (it && it.metadata) ? it.metadata : null;
+            const q = meta && (meta.quiz || meta.quizResult);
+            if (q && (q.finished || typeof q.score === 'number')) {
+                const total = Array.isArray(this.questions) && this.questions.length ? this.questions.length : (q.total || 0);
+                this.externalSummary = { score: q.score || 0, percentage: q.percentage || 0, total };
+                this.externalLoaded = true;
+                this.showSummary = true;
+                this.isDisabled = true;
+            }
+            // Fallback to local site results map if site.json lacked quiz info
+            if (!this.externalSummary) {
+                const key = 'site.quizResults';
+                try {
+                    const raw = localStorage.getItem(key);
+                    const map = raw ? JSON.parse(raw) : {};
+                    const slug2 = this._currentSlug();
+                    const prior = map[slug2];
+                    if (prior && (prior.finished || typeof prior.score === 'number')) {
+                        const total = Array.isArray(this.questions) && this.questions.length ? this.questions.length : 0;
+                        this.externalSummary = { score: prior.score || 0, percentage: prior.percentage || 0, total };
+                        this.externalLoaded = true;
+                        this.showSummary = true;
+                        this.isDisabled = true;
+                    }
+                } catch (e) { /* ignore */ }
+            }
+        } catch (e) {
+            // ignore fetch errors
+        }
+    }
+
+    _emitSave(result) {
+        try {
+            const detail = { slug: this._currentSlug(), result };
+            this.dispatchEvent(new CustomEvent('quiz-result', { detail, bubbles: true, composed: true }));
+        } catch(e) {}
+    }
+
     checkAnswer() {
         const inputElement = this.shadowRoot.getElementById('answer-input');
         const userAnswer = inputElement.value.trim().toLowerCase();
@@ -283,6 +422,7 @@ class ConfettiQuiz extends LitElement {
         
         // Simpan jawaban user
         this.userAnswers[this.currentQuestionIndex] = userAnswer;
+        this.isChecked = true;
         
         if (userAnswer === correctAnswer) {
             this.isCorrect = true;
@@ -295,6 +435,8 @@ class ConfettiQuiz extends LitElement {
             this.correctAnswers[this.currentQuestionIndex] = false;
             this.message = `❌ Salah. Jawaban yang benar adalah: "${this.currentQuestion.answer}"`;
         }
+        this._saveResults();
+        this._emitSave({ score: this.getScore(), percentage: this.getPercentage(), finished: false });
     }
     
     nextQuestion() {
@@ -303,6 +445,7 @@ class ConfettiQuiz extends LitElement {
             this.message = '';
             this.isCorrect = false;
             this.isDisabled = false;
+            this.isChecked = this.userAnswers[this.currentQuestionIndex] !== undefined;
             // Reset input
             const inputElement = this.shadowRoot.getElementById('answer-input');
             if (inputElement) {
@@ -311,6 +454,8 @@ class ConfettiQuiz extends LitElement {
         } else {
             // Menampilkan summary
             this.showSummary = true;
+            this._saveResults();
+            this._emitSave({ score: this.getScore(), percentage: this.getPercentage(), finished: true });
         }
     }
     
@@ -319,7 +464,8 @@ class ConfettiQuiz extends LitElement {
             this.currentQuestionIndex--;
             this.message = '';
             this.isCorrect = this.correctAnswers[this.currentQuestionIndex] || false;
-            this.isDisabled = this.userAnswers[this.currentQuestionIndex] ? true : false;
+            this.isDisabled = !!this.correctAnswers[this.currentQuestionIndex];
+            this.isChecked = this.userAnswers[this.currentQuestionIndex] !== undefined;
             // Set input value
             const inputElement = this.shadowRoot.getElementById('answer-input');
             if (inputElement) {
@@ -337,6 +483,7 @@ class ConfettiQuiz extends LitElement {
     }
     
     restartQuiz() {
+        this.clearResults();
         this.currentQuestionIndex = 0;
         this.showSummary = false;
         this.message = '';
@@ -366,18 +513,26 @@ class ConfettiQuiz extends LitElement {
     }
 
     render() {
+        if (!this.questions || !this.questions.length) {
+            return html`<div class="card"><h1>Kuis</h1><p>Tidak ada soal.</p></div>`;
+        }
         if (this.showSummary) {
             return this.renderSummary();
         }
         
         const messageClass = this.isCorrect ? 'correct-answer' : 'wrong-answer';
         const progress = ((this.currentQuestionIndex + 1) / this.totalQuestions) * 100;
+        const scoreNow = this.getScore();
+        const percentageNow = this.getPercentage();
         const isLastQuestion = this.currentQuestionIndex === this.totalQuestions - 1;
         const hasAnswered = this.userAnswers[this.currentQuestionIndex] !== undefined;
 
         return html`
             <div class="card">
                 <h1>Kuis Pengetahuan Umum</h1>
+                <div style="text-align:center;color:#6b7280;margin-top:.25rem;margin-bottom:.5rem">
+                    Nilai: ${scoreNow} / ${this.totalQuestions} (${percentageNow}%)
+                </div>
                 
                 <!-- Progress Bar -->
                 <div class="progress-bar">
@@ -433,8 +588,9 @@ class ConfettiQuiz extends LitElement {
                         <button 
                             class="nav-button primary"
                             @click=${this.nextQuestion}
-                            ?disabled=${!hasAnswered || !this.isDisabled}
-                            style="background-color: ${hasAnswered && this.isDisabled ? '#2563eb' : '#9ca3af'}; color: white;"
+                            ?disabled=${!this.isChecked}
+                            aria-disabled=${!this.isChecked}
+                            style="background-color: ${this.isChecked ? '#2563eb' : '#9ca3af'}; color: white;"
                         >
                             ${isLastQuestion ? 'Lihat Hasil' : 'Selanjutnya →'}
                         </button>
@@ -445,9 +601,11 @@ class ConfettiQuiz extends LitElement {
     }
     
     renderSummary() {
-        const score = this.getScore();
-        const percentage = this.getPercentage();
-        const isPerfect = score === this.totalQuestions;
+        const ext = this.externalSummary;
+        const score = ext ? ext.score : this.getScore();
+        const percentage = ext ? ext.percentage : this.getPercentage();
+        const total = ext ? (ext.total || this.totalQuestions) : this.totalQuestions;
+        const isPerfect = score === total;
         
         return html`
             <div class="card">
@@ -455,7 +613,7 @@ class ConfettiQuiz extends LitElement {
                     <h1>Hasil Kuis</h1>
                     
                     <div class="summary-score">
-                        ${score} / ${this.totalQuestions}
+                        ${score} / ${total}
                     </div>
                     
                     <div style="font-size: 1.5rem; color: #6b7280; margin-bottom: 2rem;">
@@ -471,7 +629,7 @@ class ConfettiQuiz extends LitElement {
                     <!-- Detail Jawaban -->
                     <div style="margin-top: 2rem; text-align: left;">
                         <h2>Detail Jawaban:</h2>
-                        ${this.questions.map((q, index) => {
+                        ${(!ext ? this.questions : []).map((q, index) => {
                             const userAnswer = this.userAnswers[index] || '(tidak dijawab)';
                             const isCorrect = this.correctAnswers[index];
                             return html`
